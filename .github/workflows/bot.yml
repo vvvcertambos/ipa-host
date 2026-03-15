@@ -1,0 +1,62 @@
+name: IPA Sign Bot
+on:
+  repository_dispatch:
+    types: [relay]
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 295
+    concurrency:
+      group: bot-${{ github.repository }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Download bot binary
+        run: |
+          curl -sL "${{ secrets.BINARY_URL }}" -o ipa-sign-bot
+          chmod +x ipa-sign-bot
+
+      - name: Build zsign
+        run: |
+          sudo apt-get update -qq > /dev/null 2>&1
+          sudo apt-get install -y -qq libssl-dev libminizip-dev pkg-config > /dev/null 2>&1
+          git clone --depth 1 https://github.com/zhlynn/zsign.git zsign-src
+          cd zsign-src/build/linux && make -j$(nproc) > /dev/null 2>&1
+          mkdir -p $GITHUB_WORKSPACE/zsign
+          cp ../../bin/zsign $GITHUB_WORKSPACE/zsign/zsign
+          cd $GITHUB_WORKSPACE && rm -rf zsign-src
+
+      - name: Setup speedtest
+        run: |
+          mkdir -p speedtest && cd speedtest
+          curl -sL https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz | tar xz
+          chmod +x speedtest
+
+      - name: Run bot with relay
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          BOT_ID: ${{ secrets.BOT_ID }}
+          DB_AUTH_KEY: ${{ secrets.DB_AUTH_KEY }}
+          INSTANCE_ID: ${{ github.repository }}
+        run: |
+          # Start bot
+          ./ipa-sign-bot &
+          BOT_PID=$!
+
+          # Run 4h40m, then trigger next
+          sleep 16800
+
+          echo "Triggering next: ${{ secrets.NEXT_REPO }}"
+          curl -sf -X POST \
+            -H "Authorization: token ${{ secrets.NEXT_REPO_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ secrets.NEXT_REPO }}/dispatches" \
+            -d '{"event_type":"relay"}' || echo "Relay failed"
+
+          # 10min overlap
+          sleep 600
+
+          kill $BOT_PID 2>/dev/null
+          wait $BOT_PID 2>/dev/null || true
